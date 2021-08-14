@@ -13,6 +13,7 @@ package sql
 import (
 	"context"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/docs"
 	"go/constant"
 	"strconv"
 	"strings"
@@ -211,6 +212,34 @@ func getSchemaForCreateTable(
 
 func (n *createTableNode) startExec(params runParams) error {
 	telemetry.Inc(sqltelemetry.SchemaChangeCreateCounter("table"))
+
+	for _, def := range n.n.Defs {
+		switch d := def.(type) {
+		case *tree.UniqueConstraintTableDef:
+			if d.PrimaryKey {
+				// keep track of the columns
+			}
+		case *tree.ColumnTableDef:
+			if d.PrimaryKey.IsPrimaryKey && d.IsSerial {
+				switch e := d.DefaultExpr.Expr.(type) {
+				case *tree.FuncExpr:
+					funcDef, err := e.Func.Resolve(sessiondata.EmptySearchPath)
+					if err != nil {
+						return err
+					}
+
+					// Warn against the use of sequences in primary keys, which is usually slower than alternative
+					// options like a random UUID.
+					if funcDef.Name == "nextval" {
+						url := docs.URL("serial.html")
+						params.p.BufferClientNotice(
+							params.ctx,
+							pgnotice.Newf("using sequential values in a primary key does not perform as well as using random UUIDs. See %v", url))
+					}
+				}
+			}
+		}
+	}
 
 	schema, err := getSchemaForCreateTable(params, n.dbDesc, n.n.Persistence, &n.n.Table,
 		tree.ResolveRequireTableDesc, n.n.IfNotExists)
