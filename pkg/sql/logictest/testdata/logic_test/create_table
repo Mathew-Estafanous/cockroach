@@ -479,11 +479,31 @@ CREATE TABLE ctas AS (SELECT * FROM crdb_internal.node_txn_stats);
 
 subtest warn_slow_sequence
 
- query T noticetrace
- CREATE TABLE customer_list (
-     id INT PRIMARY KEY DEFAULT nextval('customer_seq'),
-     customer string,
-     address string
-   );
- ----
- NOTICE: using sequential values in a primary key does not perform as well as using random UUIDs. See https://www.cockroachlabs.com/docs/.*/serial.html
+statement ok
+CREATE SEQUENCE incr_one INCREMENT BY 1 START WITH 1;
+
+query T noticetrace
+CREATE TABLE customer_list (
+   id INT PRIMARY KEY DEFAULT nextval('incr_one'),
+   customer string,
+   address string
+ );
+----
+NOTICE: using sequential values in a primary key does not perform as well as using random UUIDs. See https://www.cockroachlabs.com/docs/dev/serial.html
+
+query T noticetrace
+CREATE TABLE person_list (
+  id INT DEFAULT nextval('incr_one'),
+  data string,
+  PRIMARY KEY (id)
+);
+----
+NOTICE: using sequential values in a primary key does not perform as well as using random UUIDs. See https://www.cockroachlabs.com/docs/dev/serial.html
+
+query T noticetrace
+CREATE TABLE serial_test (
+  id SERIAL PRIMARY KEY,
+  temp string
+);
+----
+NOTICE: using sequential values in a primary key does not perform as well as using random UUIDs. See https://www.cockroachlabs.com/docs/dev/serial.html

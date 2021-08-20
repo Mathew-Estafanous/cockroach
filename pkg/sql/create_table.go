@@ -210,34 +210,74 @@ func getSchemaForCreateTable(
 	return schema, nil
 }
 
+func usesSequenceOrSerial(colDef *tree.ColumnTableDef) (bool, error) {
+	if colDef.IsSerial {
+		return true, nil
+	}
+
+	switch e := colDef.DefaultExpr.Expr.(type) {
+	case *tree.FuncExpr:
+		funcDef, err := e.Func.Resolve(sessiondata.EmptySearchPath)
+		if err != nil {
+			return false, err
+		}
+		// Warn against the use of sequences in primary keys, which is usually slower than alternative
+		// options like a random UUID.
+		if funcDef.Name == "nextval" {
+			// Add column since it has met sequence requirement.
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (n *createTableNode) startExec(params runParams) error {
 	telemetry.Inc(sqltelemetry.SchemaChangeCreateCounter("table"))
 
+	primaryKeyCol := make(map[tree.Name]bool)
+	var sendWarning bool
 	for _, def := range n.n.Defs {
 		switch d := def.(type) {
 		case *tree.UniqueConstraintTableDef:
 			if d.PrimaryKey {
-				// keep track of the columns
-			}
-		case *tree.ColumnTableDef:
-			if d.PrimaryKey.IsPrimaryKey && d.IsSerial {
-				switch e := d.DefaultExpr.Expr.(type) {
-				case *tree.FuncExpr:
-					funcDef, err := e.Func.Resolve(sessiondata.EmptySearchPath)
-					if err != nil {
-						return err
+				for _, c := range d.Columns {
+					// check if the column has met sequence requirement yet. If yes then
+					// column has met all requirements and we can now send warning.
+					if primaryKeyCol[c.Column] {
+						sendWarning = true
+						break
 					}
-
-					// Warn against the use of sequences in primary keys, which is usually slower than alternative
-					// options like a random UUID.
-					if funcDef.Name == "nextval" {
-						url := docs.URL("serial.html")
-						params.p.BufferClientNotice(
-							params.ctx,
-							pgnotice.Newf("using sequential values in a primary key does not perform as well as using random UUIDs. See %v", url))
-					}
+					// If not, then add column since it has met primary key requirement.
+					primaryKeyCol[c.Column] = true
 				}
 			}
+		case *tree.ColumnTableDef:
+			if d.PrimaryKey.IsPrimaryKey {
+					primaryKeyCol[d.Name] = true
+			}
+
+			isSerialOrSequence, err := usesSequenceOrSerial(d)
+			if err != nil {
+				return err
+			}
+
+			if isSerialOrSequence {
+				if primaryKeyCol[d.Name] {
+					sendWarning = true
+					break
+				}
+				primaryKeyCol[d.Name] = true
+			}
+		}
+
+		// Warn against the use of sequences in primary keys, which is usually slower than alternative
+		// options like a random UUID.
+		if sendWarning {
+			url := docs.URL("serial.html")
+			params.p.BufferClientNotice(
+				params.ctx,
+				pgnotice.Newf("using sequential values in a primary key does not perform as well as using random UUIDs. See %v", url))
+			break
 		}
 	}
 
